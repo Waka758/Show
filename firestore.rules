@@ -1,0 +1,164 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/platformAdmins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/platformAdmins/$(request.auth.uid)).data.active == true;
+    }
+
+    function userDoc(orgId) {
+      return get(/databases/$(database)/documents/orgs/$(orgId)/users/$(request.auth.uid));
+    }
+
+    function isMember(orgId) {
+      return isSignedIn() && userDoc(orgId).data != null;
+    }
+
+    function isOwner(orgId) {
+      return isMember(orgId) && userDoc(orgId).data.role == 'OWNER';
+    }
+
+    function isAdmin(orgId) {
+      return isMember(orgId) && userDoc(orgId).data.role == 'ADMIN';
+    }
+
+    function isOwnerOrAdmin(orgId) {
+      return isOwner(orgId) || isAdmin(orgId);
+    }
+
+    function isStaff(orgId) {
+      return isMember(orgId) && userDoc(orgId).data.role == 'STAFF';
+    }
+
+    function canReadOrg(orgId) {
+      return isMember(orgId) || isSuperAdmin();
+    }
+
+    function canManageOrg(orgId) {
+      return isOwnerOrAdmin(orgId) || isSuperAdmin();
+    }
+
+    match /platformAdmins/{adminId} {
+      allow read: if isSignedIn() && request.auth.uid == adminId;
+      allow write: if false;
+    }
+
+    match /orgs/{orgId} {
+      allow read: if canReadOrg(orgId);
+      allow create, update, delete: if isOwner(orgId) || isSuperAdmin();
+
+      match /users/{userId} {
+        allow read: if canReadOrg(orgId);
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && !exists(/databases/$(database)/documents/orgs/$(orgId)/users/$(userId))
+          || canManageOrg(orgId);
+        allow update, delete: if canManageOrg(orgId);
+      }
+
+      match /sites/{siteId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if canManageOrg(orgId);
+      }
+
+      match /industryPacks/{packId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if isOwner(orgId) || isSuperAdmin();
+      }
+
+      match /orgSetup/{docId} {
+        allow read: if isOwner(orgId) || isSuperAdmin();
+        allow create, update, delete: if isOwner(orgId) || isSuperAdmin();
+      }
+
+      match /manuals/{manualId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if canManageOrg(orgId);
+
+        match /sections/{sectionId} {
+          allow read: if canReadOrg(orgId);
+          allow create, update, delete: if canManageOrg(orgId);
+        }
+      }
+
+      match /sops/{sopId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if canManageOrg(orgId);
+      }
+
+      match /checklists/{checklistId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if canManageOrg(orgId);
+      }
+
+      match /checklistRuns/{runId} {
+        allow read: if canReadOrg(orgId);
+        allow create: if isSuperAdmin()
+          || (isMember(orgId) && isChecklistAllowed(orgId, request.resource.data.checklistId));
+        allow update: if isMember(orgId) || isSuperAdmin();
+        allow delete: if canManageOrg(orgId);
+
+        match /items/{itemId} {
+          allow read, create, update: if isMember(orgId) || isSuperAdmin();
+          allow delete: if canManageOrg(orgId);
+        }
+      }
+
+      match /incidents/{incidentId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update: if isMember(orgId) || isSuperAdmin();
+        allow delete: if canManageOrg(orgId);
+      }
+
+      match /tasks/{taskId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update: if isMember(orgId) || isSuperAdmin();
+        allow delete: if canManageOrg(orgId);
+      }
+
+      match /xpEvents/{eventId} {
+        allow read: if canReadOrg(orgId);
+        allow create: if isMember(orgId) || isSuperAdmin();
+        allow update, delete: if canManageOrg(orgId);
+      }
+
+      match /userStats/{userId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update: if isMember(orgId) || isSuperAdmin();
+        allow delete: if canManageOrg(orgId);
+      }
+
+      match /siteLeaderboards/{siteId} {
+        allow read: if canReadOrg(orgId);
+        allow create, update, delete: if canManageOrg(orgId);
+      }
+    }
+
+    match /subscriptions/{orgId} {
+      allow read: if isMember(orgId) || isSuperAdmin();
+      allow create, update, delete: if isOwner(orgId) || isSuperAdmin();
+    }
+
+    match /usage/{usageId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    function isChecklistAllowed(orgId, checklistId) {
+      if (isSuperAdmin()) {
+        return true;
+      }
+      let checklist = get(/databases/$(database)/documents/orgs/$(orgId)/checklists/$(checklistId));
+      let user = userDoc(orgId).data;
+      let roleAllowed = checklist.data.roleTarget == user.role || user.role == 'OWNER' || user.role == 'ADMIN';
+      let siteAllowed = checklist.data.siteId == null || checklist.data.siteId == user.siteId;
+      return checklist.data != null && roleAllowed && siteAllowed;
+    }
+  }
+}
